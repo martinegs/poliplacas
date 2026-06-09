@@ -1,0 +1,92 @@
+@import "@tabler/core/dist/css/tabler.min.css";
+@import "leaflet/dist/leaflet.css";
+@import "tom-select/dist/css/tom-select.bootstrap5.min.css";
+
+/* Sidebar overrides for #019127 */
+.navbar-vertical {
+    background-color: #019127 !important;
+}
+.navbar-vertical .nav-link {
+    color: rgba(255, 255, 255, 0.75) !important;
+}
+.navbar-vertical .nav-link:hover,
+.navbar-vertical .nav-link:focus {
+    color: #ffffff !important;
+    background-color: rgba(255, 255, 255, 0.1) !important;
+}
+.navbar-vertical .nav-item.active {
+    position: relative;
+}
+.navbar-vertical .nav-item.active::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 4px;
+    background-color: #ffffff;
+}
+.navbar-vertical .nav-item.active .nav-link {
+    color: #ffffff !important;
+    background-color: rgba(255, 255, 255, 0.15) !important;
+    font-weight: 600;
+}
+.navbar-vertical .nav-link-icon {
+    color: rgba(255, 255, 255, 0.75) !important;
+}
+.navbar-vertical .nav-link:hover .nav-link-icon,
+.navbar-vertical .nav-item.active .nav-link-icon {
+    color: #ffffff !important;
+}
+
+/* Color principal del sistema */
+:root {
+    --tblr-primary: #019127 !important;
+    --tblr-primary-rgb: 1, 145, 39 !important;
+    --bs-primary: #019127 !important;
+    --bs-primary-rgb: 1, 145, 39 !important;
+}
+
+/* Button overrides */
+.btn-primary {
+    background-color: #019127 !important;
+    border-color: #019127 !important;
+    color: #ffffff !important;
+}
+.btn-primary:hover,
+.btn-primary:focus,
+.btn-primary:active {
+    background-color: #017520 !important;
+    border-color: #017520 !important;
+    color: #ffffff !important;
+}
+.btn-outline-primary {
+    color: #019127 !important;
+    border-color: #019127 !important;
+}
+.btn-outline-primary:hover,
+.btn-outline-primary:focus,
+.btn-outline-primary:active {
+    background-color: #019127 !important;
+    border-color: #019127 !important;
+    color: #ffffff !important;
+}
+
+/* Link and text color overrides */
+a {
+    color: #019127;
+}
+a:hover {
+    color: #017520;
+}
+.text-primary {
+    color: #019127 !important;
+}
+.border-primary {
+    border-color: #019127 !important;
+}
+
+/* Leaflet marker SVG green theme */
+.custom-div-icon svg {
+    color: #019127 !important;
+}
