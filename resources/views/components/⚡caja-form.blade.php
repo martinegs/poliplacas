@@ -130,12 +130,33 @@ new class extends Component {
         <div class="mb-4">
             <label for="entidad_id" class="form-label">Proveedor / Cliente <span class="text-muted">(Opcional)</span></label>
             <div class="d-flex gap-2">
-                <select wire:model="entidad_id" id="entidad_id" class="form-select">
-                    <option value="">-- Selecciona una entidad --</option>
-                    @foreach($proveedores as $proveedor)
-                        <option value="{{ $proveedor->id }}">{{ $proveedor->nombre }} ({{ $proveedor->dni_cuit ?? 'Sin CUIT' }})</option>
-                    @endforeach
-                </select>
+                <div wire:ignore class="flex-grow-1" x-data="{ value: @entangle('entidad_id') }">
+                    <select x-init="
+                        const ts = new TomSelect($el, {
+                            placeholder: '-- Selecciona una entidad --',
+                            onChange: function(val) {
+                                value = val;
+                            }
+                        });
+                        $watch('value', val => {
+                            if (ts.getValue() !== val) {
+                                ts.setValue(val);
+                            }
+                        });
+                        $wire.on('entidad-creada', (event) => {
+                            ts.addOption({
+                                value: event.id,
+                                text: `${event.nombre} (${event.dni_cuit || 'Sin CUIT'})`
+                            });
+                            ts.setValue(event.id);
+                        });
+                    " id="entidad_id" class="form-select">
+                        <option value="">-- Selecciona una entidad --</option>
+                        @foreach($proveedores as $proveedor)
+                            <option value="{{ $proveedor->id }}" {{ $proveedor->id == $entidad_id ? 'selected' : '' }}>{{ $proveedor->nombre }} ({{ $proveedor->dni_cuit ?? 'Sin CUIT' }})</option>
+                        @endforeach
+                    </select>
+                </div>
                 <button type="button" class="btn btn-outline-primary d-flex align-items-center" data-bs-toggle="modal" data-bs-target="#nuevoProveedorModal" title="Nueva Entidad">
                     <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-tabler icon-tabler-plus m-0" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
                         <path stroke="none" d="M0 0h24v24H0z" fill="none"></path>

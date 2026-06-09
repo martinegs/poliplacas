@@ -51,7 +51,7 @@ new class extends Component
         } else {
             $newEntidad = Entidad::create($validated);
             if ($this->isModal) {
-                $this->dispatch($this->emitEvent, id: $newEntidad->id);
+                $this->dispatch($this->emitEvent, id: $newEntidad->id, nombre: $newEntidad->nombre, dni_cuit: $newEntidad->dni_cuit);
                 return;
             }
             session()->flash('success', 'Entidad creada correctamente.');

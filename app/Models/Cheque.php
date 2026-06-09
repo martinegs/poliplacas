@@ -13,7 +13,7 @@ class Cheque extends Model
 
     protected $fillable = [
         'numero',
-        'banco',
+        'banco_id',
         'monto',
         'fecha_cobro',
         'entidad_id',
@@ -24,6 +24,7 @@ class Cheque extends Model
         'caja_id',
         'caja_egreso_id',
         'caja_cobro_id',
+        'comision_caja_id',
     ];
 
     protected $casts = [
@@ -31,6 +32,22 @@ class Cheque extends Model
         'fecha_salida' => 'date',
         'monto' => 'decimal:2',
     ];
+
+    /**
+     * Get the bank where the check was issued.
+     */
+    public function banco()
+    {
+        return $this->belongsTo(Banco::class, 'banco_id');
+    }
+
+    /**
+     * Get the Caja entry associated with the commission fee.
+     */
+    public function comisionCaja()
+    {
+        return $this->belongsTo(Caja::class, 'comision_caja_id');
+    }
 
     /**
      * Get the entity/provider who delivered the check.

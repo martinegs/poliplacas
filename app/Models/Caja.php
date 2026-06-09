@@ -27,4 +27,12 @@ class Caja extends Model
     {
         return $this->belongsTo(Entidad::class, 'entidad_id');
     }
+
+    /**
+     * Get the cheque associated with this cashing record.
+     */
+    public function chequeCobro()
+    {
+        return $this->hasOne(Cheque::class, 'caja_cobro_id');
+    }
 }

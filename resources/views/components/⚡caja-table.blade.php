@@ -14,6 +14,11 @@ new class extends Component {
     public $movimiento = '';
     public $proveedor_id = '';
 
+    // Commission fields
+    public $selectedCajaId = null;
+    public $comisionMonto = '';
+    public $comisionFecha = '';
+
     public function updatingSearch(): void { $this->resetPage(); }
     public function updatingFechaDesde(): void { $this->resetPage(); }
     public function updatingFechaHasta(): void { $this->resetPage(); }
@@ -41,12 +46,74 @@ new class extends Component {
         }
     }
 
+    public function openComisionModal($cajaId)
+    {
+        $caja = Caja::with('chequeCobro')->find($cajaId);
+        if ($caja && $caja->chequeCobro) {
+            $this->selectedCajaId = $cajaId;
+            $this->comisionMonto = '';
+            $this->comisionFecha = $caja->created_at->format('Y-m-d');
+            $this->dispatch('open-comision-modal');
+        }
+    }
+
+    public function saveComision()
+    {
+        $this->validate([
+            'comisionMonto' => 'required|numeric|min:0.01',
+            'comisionFecha' => 'required|date',
+        ], [
+            'comisionMonto.required' => 'El monto de la comisión es obligatorio.',
+            'comisionMonto.numeric' => 'El monto debe ser un número.',
+            'comisionMonto.min' => 'El monto debe ser mayor a 0.',
+            'comisionFecha.required' => 'La fecha es obligatoria.',
+        ]);
+
+        $caja = Caja::with('chequeCobro')->find($this->selectedCajaId);
+        if ($caja && $caja->chequeCobro) {
+            $cheque = $caja->chequeCobro;
+
+            \DB::transaction(function() use ($cheque) {
+                // Create Caja egreso for commission
+                $comision = Caja::create([
+                    'monto' => $this->comisionMonto,
+                    'tipo' => 'efectivo',
+                    'movimiento' => 'egreso',
+                    'motivo' => "Comisión por cobro de Cheque #{$cheque->numero}",
+                    'entidad_id' => $cheque->entidad_id ?: null,
+                    'created_at' => $this->comisionFecha,
+                ]);
+
+                $cheque->update([
+                    'comision_caja_id' => $comision->id,
+                ]);
+            });
+
+            $this->dispatch('close-comision-modal');
+            $this->dispatch('toast', message: 'Comisión registrada correctamente.', type: 'success');
+            $this->reset(['selectedCajaId', 'comisionMonto', 'comisionFecha']);
+        }
+    }
+
+    public function deleteComision($chequeId)
+    {
+        $cheque = \App\Models\Cheque::find($chequeId);
+        if ($cheque && $cheque->comision_caja_id) {
+            \DB::transaction(function() use ($cheque) {
+                $comisionId = $cheque->comision_caja_id;
+                $cheque->update(['comision_caja_id' => null]);
+                Caja::destroy($comisionId);
+            });
+            $this->dispatch('toast', message: 'Comisión eliminada correctamente.', type: 'success');
+        }
+    }
+
     public function render()
     {
         $proveedores = \App\Models\Entidad::orderBy('nombre')->get();
 
         $query = Caja::query()
-            ->with('proveedor');
+            ->with(['proveedor', 'chequeCobro.comisionCaja']);
 
         if ($this->search) {
             $query->where(function($q) {
@@ -263,7 +330,27 @@ new class extends Component {
                                 {{ $caja->movimiento === 'ingreso' ? '+' : '-' }}${{ number_format($caja->monto, 2, ',', '.') }}
                             </td>
                             <td class="text-end">
-                                <div class="d-flex justify-content-end gap-2">
+                                <div class="d-flex justify-content-end gap-2 align-items-center">
+                                    @if($caja->movimiento === 'ingreso' && $caja->tipo === 'efectivo' && $caja->chequeCobro)
+                                        @if($caja->chequeCobro->comisionCaja)
+                                            <span class="badge bg-warning-lt d-inline-flex align-items-center px-2 py-1.5 gap-1" style="font-size: 0.8rem;">
+                                                <span>Comisión: ${{ number_format($caja->chequeCobro->comisionCaja->monto, 2, ',', '.') }}</span>
+                                                <button type="button" wire:click="deleteComision({{ $caja->chequeCobro->id }})" wire:confirm="¿Desea eliminar la comisión de este cheque?" class="btn-close ms-1" style="font-size: 0.65rem;" aria-label="Eliminar"></button>
+                                            </span>
+                                        @else
+                                            <button type="button" wire:click="openComisionModal({{ $caja->id }})" class="btn btn-sm btn-outline-warning d-inline-flex align-items-center gap-1">
+                                                <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-tabler icon-tabler-receipt-tax" width="16" height="16" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                                                   <path stroke="none" d="M0 0h24v24H0z" fill="none"></path>
+                                                   <path d="M9 14l6 -6"></path>
+                                                   <circle cx="9.5" cy="8.5" r=".5" fill="currentColor"></circle>
+                                                   <circle cx="14.5" cy="13.5" r=".5" fill="currentColor"></circle>
+                                                   <path d="M5 21v-16a2 2 0 0 1 2 -2h10a2 2 0 0 1 2 2v16l-3 -2l-2 2l-2 -2l-2 2l-2 -2l-3 2"></path>
+                                                </svg>
+                                                <span>Informar Comisión</span>
+                                            </button>
+                                        @endif
+                                    @endif
+
                                     <a href="{{ route('cajas.edit', $caja) }}" class="btn btn-sm btn-outline-primary d-inline-flex align-items-center gap-1" title="Editar">
                                         <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-tabler icon-tabler-edit-2" width="16" height="16" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
                                            <path stroke="none" d="M0 0h24v24H0z" fill="none"></path>
@@ -298,5 +385,56 @@ new class extends Component {
 
     <div class="mt-3">
         {{ $cajas->links() }}
+    </div>
+
+    <!-- Modal Comisión -->
+    <div class="modal modal-blur fade" id="modal-comision" tabindex="-1" role="dialog" aria-hidden="true" x-data="{
+        modal: null,
+        init() {
+            this.modal = new bootstrap.Modal(document.getElementById('modal-comision'));
+            window.addEventListener('open-comision-modal', () => this.modal.show());
+            window.addEventListener('close-comision-modal', () => this.modal.hide());
+        }
+    }">
+        <div class="modal-dialog modal-dialog-centered" role="document">
+            <form wire:submit.prevent="saveComision" class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title text-warning d-flex align-items-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-tabler icon-tabler-receipt-tax" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                           <path stroke="none" d="M0 0h24v24H0z" fill="none"></path>
+                           <path d="M9 14l6 -6"></path>
+                           <circle cx="9.5" cy="8.5" r=".5" fill="currentColor"></circle>
+                           <circle cx="14.5" cy="13.5" r=".5" fill="currentColor"></circle>
+                           <path d="M5 21v-16a2 2 0 0 1 2 -2h10a2 2 0 0 1 2 2v16l-3 -2l-2 2l-2 -2l-2 2l-2 -2l-3 2"></path>
+                        </svg>
+                        <span>Informar Comisión Cobrada</span>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label required">Monto de la Comisión ($)</label>
+                        <div class="input-group">
+                            <span class="input-group-text">$</span>
+                            <input type="number" step="0.01" min="0.01" class="form-control @error('comisionMonto') is-invalid @enderror" wire:model="comisionMonto" placeholder="0.00" required>
+                            @error('comisionMonto')
+                                <div class="invalid-feedback">{{ $message }}</div>
+                            @enderror
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label required">Fecha de Cobro de Comisión</label>
+                        <input type="date" class="form-control @error('comisionFecha') is-invalid @enderror" wire:model="comisionFecha" required>
+                        @error('comisionFecha')
+                            <div class="invalid-feedback">{{ $message }}</div>
+                        @enderror
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-link link-secondary me-auto" data-bs-dismiss="modal">Cancelar</button>
+                    <button type="submit" class="btn btn-warning">Registrar Comisión</button>
+                </div>
+            </form>
+        </div>
     </div>
 </div>

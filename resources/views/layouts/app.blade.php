@@ -82,8 +82,126 @@
         </div>
     </div>
 
+    <!-- Toast Container -->
+    <div id="toast-container" class="position-fixed top-0 end-0 p-3" style="z-index: 10000; max-width: 380px; width: 100%;"></div>
+
+    <style>
+        .custom-toast {
+            backdrop-filter: blur(8px);
+            border-radius: 10px !important;
+            border: 1px solid rgba(255, 255, 255, 0.15) !important;
+            transition: all 0.35s cubic-bezier(0.175, 0.885, 0.32, 1.275) !important;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.08) !important;
+        }
+        .custom-toast.bg-success {
+            background-color: rgba(46, 204, 113, 0.9) !important;
+            color: #fff !important;
+        }
+        .custom-toast.bg-danger {
+            background-color: rgba(231, 76, 60, 0.9) !important;
+            color: #fff !important;
+        }
+        .custom-toast.bg-warning {
+            background-color: rgba(241, 196, 15, 0.95) !important;
+            color: #1a252f !important;
+        }
+    </style>
+
+    <script>
+        window.showToast = function(message, type = 'success') {
+            const container = document.getElementById('toast-container');
+            if (!container) return;
+
+            let bgClass = 'bg-success';
+            let icon = `<svg xmlns="http://www.w3.org/2000/svg" class="icon" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                            <path stroke="none" d="M0 0h24v24H0z" fill="none"/>
+                            <circle cx="12" cy="12" r="9" />
+                            <path d="M9 12l2 2l4 -4" />
+                        </svg>`;
+            
+            if (type === 'error') {
+                bgClass = 'bg-danger';
+                icon = `<svg xmlns="http://www.w3.org/2000/svg" class="icon" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                            <path stroke="none" d="M0 0h24v24H0z" fill="none"/>
+                            <circle cx="12" cy="12" r="9" />
+                            <line x1="10" y1="10" x2="14" y2="14" />
+                            <line x1="14" y1="10" x2="10" y2="14" />
+                        </svg>`;
+            } else if (type === 'warning') {
+                bgClass = 'bg-warning';
+                icon = `<svg xmlns="http://www.w3.org/2000/svg" class="icon" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                            <path stroke="none" d="M0 0h24v24H0z" fill="none"/>
+                            <circle cx="12" cy="12" r="9" />
+                            <line x1="12" y1="8" x2="12" y2="12" />
+                            <line x1="12" y1="16" x2="12.01" y2="16" />
+                        </svg>`;
+            }
+
+            const id = 'toast-' + Math.random().toString(36).substr(2, 9);
+            const html = `
+                <div id="${id}" class="toast custom-toast align-items-center ${bgClass} border-0 shadow-lg mb-2 show" role="alert" aria-live="assertive" aria-atomic="true" style="opacity: 0; transform: translateY(-20px) scale(0.9);">
+                    <div class="d-flex p-3 align-items-center">
+                        <div class="me-3">${icon}</div>
+                        <div class="toast-body fw-bold flex-grow-1 p-0" style="font-size: 0.95rem; line-height: 1.4;">${message}</div>
+                        <button type="button" class="btn-close ${type === 'warning' ? '' : 'btn-close-white'} ms-2" data-bs-dismiss="toast" aria-label="Close" onclick="this.closest('.toast').remove()"></button>
+                    </div>
+                </div>
+            `;
+
+            container.insertAdjacentHTML('beforeend', html);
+            const element = document.getElementById(id);
+            
+            setTimeout(() => {
+                element.style.opacity = '1';
+                element.style.transform = 'translateY(0) scale(1)';
+            }, 50);
+
+            setTimeout(() => {
+                if (element) {
+                    element.style.opacity = '0';
+                    element.style.transform = 'translateY(-20px) scale(0.9)';
+                    setTimeout(() => element.remove(), 350);
+                }
+            }, 4000);
+        };
+
+        document.addEventListener('livewire:init', () => {
+            Livewire.on('toast', (event) => {
+                const data = Array.isArray(event) ? event[0] : event;
+                window.showToast(data.message, data.type);
+            });
+
+            Livewire.hook('commit', ({ component, succeed, fail }) => {
+                succeed(({ snapshot, effect }) => {
+                    if (effect && effect.errors && Object.keys(effect.errors).length > 0) {
+                        window.showToast("Faltan campos requeridos o hay datos inválidos.", "warning");
+                    }
+                });
+                fail(({ status, content }) => {
+                    window.showToast("Error en el servidor (" + status + "). Intente nuevamente.", "error");
+                });
+            });
+        });
+
+        // Trigger flash toasts if they exist in session
+        @if(session('success'))
+            window.addEventListener('DOMContentLoaded', () => {
+                window.showToast("{{ session('success') }}", "success");
+            });
+        @endif
+        @if(session('error'))
+            window.addEventListener('DOMContentLoaded', () => {
+                window.showToast("{{ session('error') }}", "error");
+            });
+        @endif
+        @if(session('warning'))
+            window.addEventListener('DOMContentLoaded', () => {
+                window.showToast("{{ session('warning') }}", "warning");
+            });
+        @endif
+    </script>
+
     @livewireScripts
     @stack('scripts')
 </body>
-
 </html>

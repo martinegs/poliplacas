@@ -3,6 +3,7 @@
 use App\Models\Cheque;
 use App\Models\Caja;
 use App\Models\Entidad;
+use App\Models\Banco;
 use Livewire\Component;
 use Livewire\Attributes\On;
 
@@ -10,7 +11,7 @@ new class extends Component {
     public ?Cheque $cheque = null;
 
     public $numero = '';
-    public $banco = '';
+    public $banco_id = '';
     public $monto = '';
     public $fecha_cobro = '';
     public $entidad_id = '';
@@ -23,13 +24,15 @@ new class extends Component {
 
     // Track which field is target for entity creation modal
     public $targetField = 'entidad_id';
+    public $es_tercero = false;
+    public $nuevo_banco_nombre = '';
 
     public function mount(?Cheque $cheque = null)
     {
         if ($cheque && $cheque->exists) {
             $this->cheque = $cheque;
             $this->numero = $cheque->numero;
-            $this->banco = $cheque->banco;
+            $this->banco_id = $cheque->banco_id ?: '';
             $this->monto = $cheque->monto;
             $this->fecha_cobro = $cheque->fecha_cobro ? $cheque->fecha_cobro->format('Y-m-d') : '';
             $this->entidad_id = $cheque->entidad_id ?: '';
@@ -37,8 +40,11 @@ new class extends Component {
             $this->observaciones = $cheque->observaciones;
             $this->receptor_id = $cheque->receptor_id ?: '';
             $this->fecha_salida = $cheque->fecha_salida ? $cheque->fecha_salida->format('Y-m-d') : '';
+            $this->es_tercero = !empty($cheque->entidad_id);
         } else {
+            $this->estado = 'pendiente';
             $this->fecha_cobro = now()->format('Y-m-d');
+            $this->es_tercero = false;
         }
     }
 
@@ -46,23 +52,24 @@ new class extends Component {
     {
         return [
             'numero' => 'required|string|max:255',
-            'banco' => 'required|string|max:255',
+            'banco_id' => 'required|exists:bancos,id',
             'monto' => 'required|numeric|min:0.01',
             'fecha_cobro' => 'required|date',
-            'entidad_id' => 'nullable|exists:entidades,id',
-            'estado' => 'required|string|in:pendiente,cobrado,entregado,rechazado',
+            'entidad_id' => $this->es_tercero ? 'required|exists:entidades,id' : 'nullable|exists:entidades,id',
+            'estado' => 'required|string|in:pendiente,cobrado,enviado,rechazado',
             'observaciones' => 'nullable|string|max:1000',
-            'receptor_id' => 'required_if:estado,entregado|nullable|exists:entidades,id',
-            'fecha_salida' => 'required_if:estado,entregado|nullable|date|before_or_equal:today',
+            'receptor_id' => 'required_if:estado,enviado|nullable|exists:entidades,id',
+            'fecha_salida' => 'required_if:estado,enviado|nullable|date|before_or_equal:today',
         ];
     }
 
     public function messages()
     {
         return [
-            'receptor_id.required_if' => 'El receptor es obligatorio cuando el cheque se marca como Entregado.',
-            'fecha_salida.required_if' => 'La fecha de entrega es obligatoria cuando el cheque se marca como Entregado.',
-            'fecha_salida.before_or_equal' => 'La fecha de entrega no puede ser posterior a la actual.',
+            'entidad_id.required' => 'El cliente es obligatorio cuando el cheque es de terceros.',
+            'receptor_id.required_if' => 'El receptor es obligatorio cuando el cheque se marca como Enviado.',
+            'fecha_salida.required_if' => 'La fecha de envío es obligatoria cuando el cheque se marca como Enviado.',
+            'fecha_salida.before_or_equal' => 'La fecha de envío no puede ser posterior a la actual.',
         ];
     }
 
@@ -76,8 +83,31 @@ new class extends Component {
         }
     }
 
+    public function saveBanco()
+    {
+        $this->validate([
+            'nuevo_banco_nombre' => 'required|string|unique:bancos,nombre|max:255',
+        ], [
+            'nuevo_banco_nombre.required' => 'El nombre del banco es obligatorio.',
+            'nuevo_banco_nombre.unique' => 'Este banco ya existe.',
+        ]);
+
+        $banco = Banco::create([
+            'nombre' => $this->nuevo_banco_nombre,
+        ]);
+
+        $this->banco_id = $banco->id;
+        $this->nuevo_banco_nombre = '';
+
+        $this->dispatch('banco-creado', id: $banco->id, nombre: $banco->nombre);
+    }
+
     public function save()
     {
+        if (!$this->es_tercero) {
+            $this->entidad_id = null;
+        }
+
         if (empty($this->entidad_id)) {
             $this->entidad_id = null;
         }
@@ -87,24 +117,26 @@ new class extends Component {
 
         $validated = $this->validate();
 
+        $bancoNombre = Banco::find($this->banco_id)?->nombre ?? '';
+
         // 1. Manage Caja entry for the receipt (Ingreso)
         $cajaIngresoData = [
             'monto' => $this->monto,
             'tipo' => 'cheque',
             'movimiento' => 'ingreso',
-            'motivo' => "Recepción de Cheque #{$this->numero} ({$this->banco})",
+            'motivo' => "Recepción de Cheque #{$this->numero} ({$bancoNombre})",
             'entidad_id' => $this->entidad_id ?: null,
             'created_at' => $this->fecha_cobro,
         ];
 
         // 2. Manage Caja entry for the delivery (Egreso) if applicable
         $cajaEgresoData = null;
-        if ($this->estado === 'entregado') {
+        if ($this->estado === 'enviado') {
             $cajaEgresoData = [
                 'monto' => $this->monto,
                 'tipo' => 'cheque',
                 'movimiento' => 'egreso',
-                'motivo' => "Entrega/Endoso de Cheque #{$this->numero} ({$this->banco})",
+                'motivo' => "Envío/Endoso de Cheque #{$this->numero} ({$bancoNombre})",
                 'entidad_id' => $this->receptor_id,
                 'created_at' => $this->fecha_salida ?: now()->format('Y-m-d'),
             ];
@@ -152,7 +184,7 @@ new class extends Component {
             }
 
             // Handle Caja Egreso (Delivery or Cobro Egreso)
-            if ($this->estado === 'entregado' || $this->estado === 'cobrado') {
+            if ($this->estado === 'enviado' || $this->estado === 'cobrado') {
                 if ($cheque->caja_egreso_id) {
                     $cajaEgreso = Caja::find($cheque->caja_egreso_id);
                     if ($cajaEgreso) {
@@ -195,14 +227,14 @@ new class extends Component {
 
             // Save Cheque details
             $cheque->numero = $this->numero;
-            $cheque->banco = $this->banco;
+            $cheque->banco_id = $this->banco_id;
             $cheque->monto = $this->monto;
             $cheque->fecha_cobro = $this->fecha_cobro;
             $cheque->entidad_id = $this->entidad_id ?: null;
             $cheque->estado = $this->estado;
             $cheque->observaciones = $this->observaciones;
-            $cheque->receptor_id = $this->estado === 'entregado' ? $this->receptor_id : null;
-            $cheque->fecha_salida = $this->estado === 'entregado' ? $this->fecha_salida : null;
+            $cheque->receptor_id = $this->estado === 'enviado' ? $this->receptor_id : null;
+            $cheque->fecha_salida = $this->estado === 'enviado' ? $this->fecha_salida : null;
             $cheque->save();
         });
 
@@ -214,7 +246,8 @@ new class extends Component {
     public function render()
     {
         $entidades = Entidad::orderBy('nombre')->get();
-        return $this->view(compact('entidades'));
+        $bancos = Banco::orderBy('nombre')->get();
+        return $this->view(compact('entidades', 'bancos'));
     }
 };
 ?>
@@ -229,14 +262,49 @@ new class extends Component {
             </div>
 
             <div class="col-md-6 mb-3">
-                <label for="banco" class="form-label">Banco</label>
-                <input type="text" wire:model="banco" id="banco" class="form-control" placeholder="Ej: Banco Galicia" required>
-                @error('banco') <span class="text-danger small">{{ $message }}</span> @enderror
+                <label for="banco_id" class="form-label font-weight-bold">Banco <span class="text-danger">*</span></label>
+                <div class="d-flex gap-2">
+                    <div wire:ignore class="flex-grow-1" x-data="{ value: @entangle('banco_id') }">
+                        <select x-init="
+                            const ts = new TomSelect($el, {
+                                placeholder: '-- Selecciona un banco --',
+                                onChange: function(val) {
+                                    value = val;
+                                }
+                            });
+                            $watch('value', val => {
+                                if (ts.getValue() !== val) {
+                                    ts.setValue(val);
+                                }
+                            });
+                            $wire.on('banco-creado', (event) => {
+                                ts.addOption({
+                                    value: event.id,
+                                    text: event.nombre
+                                });
+                                ts.setValue(event.id);
+                            });
+                        " id="banco_id" class="form-select" required>
+                            <option value="">-- Selecciona un banco --</option>
+                            @foreach($bancos as $banco)
+                                <option value="{{ $banco->id }}" {{ $banco->id == $banco_id ? 'selected' : '' }}>{{ $banco->nombre }}</option>
+                            @endforeach
+                        </select>
+                    </div>
+                    <button type="button" class="btn btn-outline-primary d-flex align-items-center" data-bs-toggle="modal" data-bs-target="#nuevoBancoModal" title="Nuevo Banco">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-tabler icon-tabler-plus m-0" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                            <path stroke="none" d="M0 0h24v24H0z" fill="none"></path>
+                            <line x1="12" y1="5" x2="12" y2="19"></line>
+                            <line x1="5" y1="12" x2="19" y2="12"></line>
+                        </svg>
+                    </button>
+                </div>
+                @error('banco_id') <span class="text-danger small">{{ $message }}</span> @enderror
             </div>
         </div>
 
         <div class="row">
-            <div class="col-md-4 mb-3">
+            <div class="col-md-6 mb-3">
                 <label for="monto" class="form-label">Monto</label>
                 <div class="input-group">
                     <span class="input-group-text">$</span>
@@ -245,26 +313,15 @@ new class extends Component {
                 @error('monto') <span class="text-danger small">{{ $message }}</span> @enderror
             </div>
 
-            <div class="col-md-4 mb-3">
+            <div class="col-md-6 mb-3">
                 <label for="fecha_cobro" class="form-label">Fecha de Cobro / Vencimiento</label>
                 <input type="date" wire:model="fecha_cobro" id="fecha_cobro" class="form-control" required>
                 @error('fecha_cobro') <span class="text-danger small">{{ $message }}</span> @enderror
             </div>
-
-            <div class="col-md-4 mb-3">
-                <label for="estado" class="form-label">Estado</label>
-                <select wire:model.live="estado" id="estado" class="form-select" required>
-                    <option value="pendiente">Pendiente</option>
-                    <option value="cobrado">Cobrado</option>
-                    <option value="entregado">Entregado (Egreso/Proveedor)</option>
-                    <option value="rechazado">Rechazado</option>
-                </select>
-                @error('estado') <span class="text-danger small">{{ $message }}</span> @enderror
-            </div>
         </div>
 
         <!-- Dynamic Egress / Delivery details -->
-        @if ($estado === 'entregado')
+        @if ($estado === 'enviado')
             <div class="card bg-light border-start border-primary border-3 mb-3 shadow-sm">
                 <div class="card-body">
                     <h4 class="card-title text-primary mb-2 d-flex align-items-center gap-1">
@@ -273,18 +330,41 @@ new class extends Component {
                            <path d="M17 7l-10 10"></path>
                            <path d="M8 7l9 0l0 9"></path>
                         </svg>
-                        <span>Detalles de la Entrega (Egreso de Caja)</span>
+                        <span>Detalles del Envío (Egreso de Caja)</span>
                     </h4>
                     <div class="row">
                         <div class="col-md-6 mb-3">
-                            <label for="receptor_id" class="form-label">Entregado a (Entidad/Proveedor) <span class="text-danger">*</span></label>
+                            <label for="receptor_id" class="form-label">Enviado a (Entidad/Proveedor) <span class="text-danger">*</span></label>
                             <div class="d-flex gap-2">
-                                <select wire:model="receptor_id" id="receptor_id" class="form-select" required>
-                                    <option value="">-- Selecciona el receptor --</option>
-                                    @foreach($entidades as $entidad)
-                                        <option value="{{ $entidad->id }}">{{ $entidad->nombre }} ({{ $entidad->dni_cuit ?? 'Sin CUIT' }})</option>
-                                    @endforeach
-                                </select>
+                                <div wire:ignore class="flex-grow-1" x-data="{ value: @entangle('receptor_id') }">
+                                    <select x-init="
+                                        const ts = new TomSelect($el, {
+                                            placeholder: '-- Selecciona el receptor --',
+                                            onChange: function(val) {
+                                                value = val;
+                                            }
+                                        });
+                                        $watch('value', val => {
+                                            if (ts.getValue() !== val) {
+                                                ts.setValue(val);
+                                            }
+                                        });
+                                        $wire.on('entidad-creada', (event) => {
+                                            ts.addOption({
+                                                value: event.id,
+                                                text: `${event.nombre} (${event.dni_cuit || 'Sin CUIT'})`
+                                            });
+                                            if ($wire.targetField === 'receptor_id') {
+                                                ts.setValue(event.id);
+                                            }
+                                        });
+                                    " id="receptor_id" class="form-select" required>
+                                        <option value="">-- Selecciona el receptor --</option>
+                                        @foreach($entidades as $entidad)
+                                            <option value="{{ $entidad->id }}" {{ $entidad->id == $receptor_id ? 'selected' : '' }}>{{ $entidad->nombre }} ({{ $entidad->dni_cuit ?? 'Sin CUIT' }})</option>
+                                        @endforeach
+                                    </select>
+                                </div>
                                 <button type="button" class="btn btn-outline-primary d-flex align-items-center" data-bs-toggle="modal" data-bs-target="#nuevaEntidadModal" wire:click="$set('targetField', 'receptor_id')" title="Nueva Entidad">
                                     <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-tabler icon-tabler-plus m-0" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
                                         <path stroke="none" d="M0 0h24v24H0z" fill="none"></path>
@@ -297,7 +377,7 @@ new class extends Component {
                         </div>
 
                         <div class="col-md-6 mb-3">
-                            <label for="fecha_salida" class="form-label">Fecha de Entrega <span class="text-danger">*</span></label>
+                            <label for="fecha_salida" class="form-label">Fecha de Envío <span class="text-danger">*</span></label>
                             <input type="date" wire:model="fecha_salida" id="fecha_salida" class="form-control" max="{{ now()->format('Y-m-d') }}" required>
                             @error('fecha_salida') <span class="text-danger small">{{ $message }}</span> @enderror
                         </div>
@@ -307,23 +387,67 @@ new class extends Component {
         @endif
 
         <div class="mb-3">
-            <label for="entidad_id" class="form-label">Recibido de / Entregado por (Cliente) <span class="text-muted">(Opcional)</span></label>
-            <div class="d-flex gap-2">
-                <select wire:model="entidad_id" id="entidad_id" class="form-select">
-                    <option value="">-- Selecciona una entidad --</option>
-                    @foreach($entidades as $entidad)
-                        <option value="{{ $entidad->id }}">{{ $entidad->nombre }} ({{ $entidad->dni_cuit ?? 'Sin CUIT' }})</option>
-                    @endforeach
-                </select>
-                <button type="button" class="btn btn-outline-primary d-flex align-items-center" data-bs-toggle="modal" data-bs-target="#nuevaEntidadModal" wire:click="$set('targetField', 'entidad_id')" title="Nueva Entidad">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-tabler icon-tabler-plus m-0" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
-                        <path stroke="none" d="M0 0h24v24H0z" fill="none"></path>
-                        <line x1="12" y1="5" x2="12" y2="19"></line>
-                        <line x1="5" y1="12" x2="19" y2="12"></line>
+            <div class="form-label">Origen del Cheque</div>
+            <label class="form-check form-switch mb-3">
+                <input class="form-check-input" type="checkbox" wire:model.live="es_tercero">
+                <span class="form-check-label font-weight-medium">¿Es cheque de terceros? (Recibido de un cliente)</span>
+            </label>
+
+            @if ($es_tercero)
+                <div class="card bg-light p-3 border-dashed">
+                    <label for="entidad_id" class="form-label font-weight-bold">Recibido de / Entregado por (Cliente) <span class="text-danger">*</span></label>
+                    <div class="d-flex gap-2">
+                        <div wire:ignore class="flex-grow-1" x-data="{ value: @entangle('entidad_id') }">
+                            <select x-init="
+                                const ts = new TomSelect($el, {
+                                    placeholder: '-- Selecciona una entidad --',
+                                    onChange: function(val) {
+                                        value = val;
+                                    }
+                                });
+                                $watch('value', val => {
+                                    if (ts.getValue() !== val) {
+                                        ts.setValue(val);
+                                    }
+                                });
+                                $wire.on('entidad-creada', (event) => {
+                                    ts.addOption({
+                                        value: event.id,
+                                        text: `${event.nombre} (${event.dni_cuit || 'Sin CUIT'})`
+                                    });
+                                    if ($wire.targetField === 'entidad_id') {
+                                        ts.setValue(event.id);
+                                    }
+                                });
+                            " id="entidad_id" class="form-select">
+                                <option value="">-- Selecciona una entidad --</option>
+                                @foreach($entidades as $entidad)
+                                    <option value="{{ $entidad->id }}" {{ $entidad->id == $entidad_id ? 'selected' : '' }}>{{ $entidad->nombre }} ({{ $entidad->dni_cuit ?? 'Sin CUIT' }})</option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <button type="button" class="btn btn-outline-primary d-flex align-items-center" data-bs-toggle="modal" data-bs-target="#nuevaEntidadModal" wire:click="$set('targetField', 'entidad_id')" title="Nueva Entidad">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-tabler icon-tabler-plus m-0" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                                <path stroke="none" d="M0 0h24v24H0z" fill="none"></path>
+                                <line x1="12" y1="5" x2="12" y2="19"></line>
+                                <line x1="5" y1="12" x2="19" y2="12"></line>
+                            </svg>
+                        </button>
+                    </div>
+                    @error('entidad_id') <span class="text-danger small d-block mt-1">{{ $message }}</span> @enderror
+                </div>
+            @else
+                <div class="alert alert-info d-flex align-items-center gap-2 mb-0 shadow-sm border-start border-info border-3">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-tabler icon-tabler-circle-check" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                       <path stroke="none" d="M0 0h24v24H0z" fill="none"></path>
+                       <circle cx="12" cy="12" r="9"></circle>
+                       <path d="M9 12l2 2l4 -4"></path>
                     </svg>
-                </button>
-            </div>
-            @error('entidad_id') <span class="text-danger small">{{ $message }}</span> @enderror
+                    <div>
+                        <strong>Cheque Propio:</strong> El cheque se registrará como de emisión propia.
+                    </div>
+                </div>
+            @endif
         </div>
 
         <div class="mb-4">
@@ -354,12 +478,45 @@ new class extends Component {
             </div>
         </div>
     </div>
+
+    <!-- Modal for Creating a New Bank -->
+    <div class="modal fade" id="nuevoBancoModal" tabindex="-1" aria-labelledby="nuevoBancoModalLabel" aria-hidden="true" wire:ignore.self>
+        <div class="modal-dialog">
+            <form wire:submit.prevent="saveBanco" class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="nuevoBancoModalLabel">Nuevo Banco</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body bg-light">
+                    <div class="mb-3">
+                        <label for="nuevo_banco_nombre" class="form-label font-weight-bold">Nombre del Banco <span class="text-danger">*</span></label>
+                        <input type="text" wire:model="nuevo_banco_nombre" id="nuevo_banco_nombre" class="form-control" placeholder="Ej: Banco de la Nación Argentina" required>
+                        @error('nuevo_banco_nombre') <span class="text-danger small">{{ $message }}</span> @enderror
+                    </div>
+                </div>
+                <div class="modal-footer bg-light border-top">
+                    <button type="button" class="btn btn-link link-secondary" data-bs-dismiss="modal">Cancelar</button>
+                    <button type="submit" class="btn btn-primary px-4">Guardar Banco</button>
+                </div>
+            </form>
+        </div>
+    </div>
 </div>
 
 @script
 <script>
     $wire.on('entidad-creada', (event) => {
         const modalEl = document.getElementById('nuevaEntidadModal');
+        if (modalEl) {
+            const closeBtn = modalEl.querySelector('[data-bs-dismiss="modal"]');
+            if (closeBtn) {
+                closeBtn.click();
+            }
+        }
+    });
+
+    $wire.on('banco-creado', (event) => {
+        const modalEl = document.getElementById('nuevoBancoModal');
         if (modalEl) {
             const closeBtn = modalEl.querySelector('[data-bs-dismiss="modal"]');
             if (closeBtn) {

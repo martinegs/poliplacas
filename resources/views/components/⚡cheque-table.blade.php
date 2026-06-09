@@ -20,7 +20,7 @@ new class extends Component {
     public $selectedChequeNumero = '';
     public $selectedChequeMonto = 0;
     
-    public $modalActionType = 'cobrar'; // 'cobrar' or 'transferir'
+    public $modalActionType = 'cobrar'; // 'cobrar' or 'enviar'
     public $modalReceptorId = '';
     public $modalFechaSalida = '';
     public $modalFechaCobroReal = '';
@@ -63,13 +63,13 @@ new class extends Component {
 
         $cheque = Cheque::findOrFail($this->selectedChequeId);
 
-        if ($this->modalActionType === 'transferir') {
+        if ($this->modalActionType === 'enviar') {
             $this->validate([
                 'modalReceptorId' => 'required|exists:entidades,id',
                 'modalFechaSalida' => 'required|date|before_or_equal:today',
             ], [
                 'modalReceptorId.required' => 'El receptor es obligatorio.',
-                'modalFechaSalida.required' => 'La fecha de entrega es obligatoria.',
+                'modalFechaSalida.required' => 'La fecha de envío es obligatoria.',
                 'modalFechaSalida.before_or_equal' => 'La fecha no puede ser posterior a hoy.',
             ]);
         } else {
@@ -82,14 +82,14 @@ new class extends Component {
         }
 
         \DB::transaction(function() use ($cheque) {
-            if ($this->modalActionType === 'transferir') {
-                // 1. Mark check as entregado
+            if ($this->modalActionType === 'enviar') {
+                // 1. Mark check as enviado
                 // 2. Create/update egreso in Caja of type cheque
                 $cajaEgresoData = [
                     'monto' => $cheque->monto,
                     'tipo' => 'cheque',
                     'movimiento' => 'egreso',
-                    'motivo' => "Entrega/Endoso de Cheque #{$cheque->numero} ({$cheque->banco})",
+                    'motivo' => "Envío/Endoso de Cheque #{$cheque->numero} (" . ($cheque->banco?->nombre ?? '') . ")",
                     'entidad_id' => $this->modalReceptorId,
                     'created_at' => $this->modalFechaSalida,
                 ];
@@ -113,7 +113,7 @@ new class extends Component {
                     $cheque->caja_cobro_id = null;
                 }
 
-                $cheque->estado = 'entregado';
+                $cheque->estado = 'enviado';
                 $cheque->receptor_id = $this->modalReceptorId;
                 $cheque->fecha_salida = $this->modalFechaSalida;
 
@@ -176,9 +176,33 @@ new class extends Component {
             $cheque->save();
         });
 
-        session()->flash('success', 'Cheque #' . $cheque->numero . ($this->modalActionType === 'transferir' ? ' transferido' : ' cobrado') . ' correctamente.');
+        session()->flash('success', 'Cheque #' . $cheque->numero . ($this->modalActionType === 'enviar' ? ' enviado' : ' cobrado') . ' correctamente.');
         $this->dispatch('close-action-modal');
         $this->reset(['selectedChequeId', 'selectedChequeNumero', 'selectedChequeMonto', 'modalReceptorId']);
+    }
+
+    public function rejectCheque($id)
+    {
+        $cheque = Cheque::findOrFail($id);
+
+        \DB::transaction(function() use ($cheque) {
+            // Clean up Caja entries that only belong to cashed/enviado states
+            if ($cheque->caja_egreso_id) {
+                Caja::destroy($cheque->caja_egreso_id);
+                $cheque->caja_egreso_id = null;
+            }
+            if ($cheque->caja_cobro_id) {
+                Caja::destroy($cheque->caja_cobro_id);
+                $cheque->caja_cobro_id = null;
+            }
+
+            $cheque->estado = 'rechazado';
+            $cheque->receptor_id = null;
+            $cheque->fecha_salida = null;
+            $cheque->save();
+        });
+
+        session()->flash('success', 'Cheque #' . $cheque->numero . ' marcado como rechazado.');
     }
 
     public function deleteCheque($id)
@@ -206,12 +230,14 @@ new class extends Component {
     {
         $entidades = Entidad::orderBy('nombre')->get();
 
-        $query = Cheque::query()->with(['entregadoPor', 'receptor']);
+        $query = Cheque::query()->with(['entregadoPor', 'receptor', 'banco']);
 
         if ($this->search) {
             $query->where(function($q) {
                 $q->where('numero', 'ilike', '%' . $this->search . '%')
-                  ->orWhere('banco', 'ilike', '%' . $this->search . '%')
+                  ->orWhereHas('banco', function($bq) {
+                      $bq->where('nombre', 'ilike', '%' . $this->search . '%');
+                  })
                   ->orWhere('observaciones', 'ilike', '%' . $this->search . '%')
                   ->orWhereHas('entregadoPor', function($eq) {
                       $eq->where('nombre', 'ilike', '%' . $this->search . '%');
@@ -244,33 +270,17 @@ new class extends Component {
         // Calculate Totals based on filtered query
         $totalPendientes = (clone $query)->where('estado', 'pendiente')->sum('monto');
         $totalCobrados = (clone $query)->where('estado', 'cobrado')->sum('monto');
-        $totalEntregados = (clone $query)->where('estado', 'entregado')->sum('monto');
+        $totalEnviados = (clone $query)->where('estado', 'enviado')->sum('monto');
         $totalRechazados = (clone $query)->where('estado', 'rechazado')->sum('monto');
 
         $cheques = $query->orderBy('fecha_cobro', 'asc')->paginate(10);
 
-        return $this->view(compact('cheques', 'entidades', 'totalPendientes', 'totalCobrados', 'totalEntregados', 'totalRechazados'));
+        return $this->view(compact('cheques', 'entidades', 'totalPendientes', 'totalCobrados', 'totalEnviados', 'totalRechazados'));
     }
 };
 ?>
 
 <div>
-    @if (session()->has('success'))
-        <div class="alert alert-success alert-dismissible fade show shadow-sm border-start border-success border-3 mb-3" role="alert">
-            <div class="d-flex">
-                <div class="me-2">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-tabler icon-tabler-check text-success" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
-                       <path stroke="none" d="M0 0h24v24H0z" fill="none"></path>
-                       <path d="M5 12l5 5l10 -10"></path>
-                    </svg>
-                </div>
-                <div>
-                    {{ session('success') }}
-                </div>
-            </div>
-            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-        </div>
-    @endif
 
     <!-- Interactive Filters Form -->
     <div class="card mb-3">
@@ -297,7 +307,7 @@ new class extends Component {
                         <option value="">Todos</option>
                         <option value="pendiente">Pendiente</option>
                         <option value="cobrado">Cobrado</option>
-                        <option value="entregado">Entregado (Egreso)</option>
+                        <option value="enviado">Enviado (Egreso)</option>
                         <option value="rechazado">Rechazado</option>
                     </select>
                 </div>
@@ -374,7 +384,7 @@ new class extends Component {
                 </div>
             </div>
         </div>
-        <!-- Delivered -->
+        <!-- Delivered / Sent -->
         <div class="col-sm-6 col-lg-3">
             <div class="card card-sm">
                 <div class="card-body">
@@ -389,8 +399,8 @@ new class extends Component {
                             </span>
                         </div>
                         <div class="col">
-                            <div class="font-weight-medium">Total Entregados</div>
-                            <div class="text-secondary font-weight-bold h3 mb-0">${{ number_format($totalEntregados, 2, ',', '.') }}</div>
+                            <div class="font-weight-medium">Total Enviados</div>
+                            <div class="text-secondary font-weight-bold h3 mb-0">${{ number_format($totalEnviados, 2, ',', '.') }}</div>
                         </div>
                     </div>
                 </div>
@@ -430,8 +440,8 @@ new class extends Component {
                         <th>Fecha de Cobro</th>
                         <th>Número</th>
                         <th>Banco</th>
-                        <th>Entregado Por (Ingreso)</th>
-                        <th>Entregado A (Egreso)</th>
+                        <th>Recibido De (Ingreso)</th>
+                        <th>Enviado A (Egreso)</th>
                         <th class="text-end">Monto</th>
                         <th class="text-center">Estado</th>
                         <th>Observaciones</th>
@@ -445,16 +455,16 @@ new class extends Component {
                                 {{ $cheque->fecha_cobro ? $cheque->fecha_cobro->format('d/m/Y') : '-' }}
                             </td>
                             <td class="font-weight-bold">{{ $cheque->numero }}</td>
-                            <td class="text-secondary">{{ $cheque->banco }}</td>
+                            <td class="text-secondary">{{ $cheque->banco?->nombre }}</td>
                             <td>
                                 @if ($cheque->entregadoPor)
                                     <span class="font-weight-medium">{{ $cheque->entregadoPor->nombre }}</span>
                                 @else
-                                    <span class="text-muted small">-</span>
+                                    <span class="badge bg-secondary-lt">Propio</span>
                                 @endif
                             </td>
                             <td>
-                                @if ($cheque->estado === 'entregado' && $cheque->receptor)
+                                @if ($cheque->estado === 'enviado' && $cheque->receptor)
                                     <span class="font-weight-medium text-info">{{ $cheque->receptor->nombre }}</span>
                                     <div class="text-muted small">{{ $cheque->fecha_salida ? $cheque->fecha_salida->format('d/m/Y') : '' }}</div>
                                 @elseif ($cheque->estado === 'cobrado')
@@ -478,8 +488,8 @@ new class extends Component {
                                     <span class="badge bg-warning-lt">Pendiente</span>
                                 @elseif ($cheque->estado === 'cobrado')
                                     <span class="badge bg-success-lt">Cobrado</span>
-                                @elseif ($cheque->estado === 'entregado')
-                                    <span class="badge bg-info-lt">Entregado</span>
+                                @elseif ($cheque->estado === 'enviado')
+                                    <span class="badge bg-info-lt">Enviado</span>
                                 @elseif ($cheque->estado === 'rechazado')
                                     <span class="badge bg-danger-lt">Rechazado</span>
                                 @endif
@@ -490,22 +500,31 @@ new class extends Component {
                             <td>
                                 <div class="btn-list flex-nowrap">
                                     @if ($cheque->estado === 'pendiente')
-                                        <button type="button" class="btn btn-outline-success btn-sm d-flex align-items-center gap-1" data-bs-toggle="modal" data-bs-target="#actionModal" wire:click="openActionModal({{ $cheque->id }})" title="Cobrar o Transferir">
+                                        <button type="button" class="btn btn-outline-success btn-sm d-flex align-items-center gap-1" data-bs-toggle="modal" data-bs-target="#actionModal" wire:click="openActionModal({{ $cheque->id }})" title="Cobrar o Enviar">
                                             <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-tabler icon-tabler-arrows-exchange" width="16" height="16" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
                                                <path stroke="none" d="M0 0h24v24H0z" fill="none"></path>
                                                <path d="M7 10h14l-4 -4"></path>
                                                <path d="M17 14h-14l4 4"></path>
                                             </svg>
-                                            <span>Cobrar/Transf.</span>
+                                            <span>Cobrar/Enviar</span>
                                         </button>
                                     @endif
-                                    <a href="{{ route('cheques.edit', $cheque) }}" class="btn btn-icon btn-outline-primary btn-sm" title="Editar / Entregar">
+                                    <a href="{{ route('cheques.edit', $cheque) }}" class="btn btn-icon btn-outline-primary btn-sm" title="Editar">
                                         <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-tabler icon-tabler-pencil m-0" width="20" height="20" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
                                            <path stroke="none" d="M0 0h24v24H0z" fill="none"></path>
                                            <path d="M4 20h4l10.5 -10.5a1.5 1.5 0 0 0 -4 -4l-10.5 10.5v4"></path>
                                            <path d="M13.5 6.5l4 4"></path>
                                         </svg>
                                     </a>
+                                    @if ($cheque->estado !== 'rechazado')
+                                        <button type="button" class="btn btn-icon btn-outline-warning btn-sm" wire:click="rejectCheque({{ $cheque->id }})" wire:confirm="¿Estás seguro de que deseas marcar este cheque como rechazado? (Se eliminarán sus cobros o envíos de caja asociados)" title="Rechazar Cheque">
+                                            <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-tabler icon-tabler-ban m-0" width="20" height="20" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                                               <path stroke="none" d="M0 0h24v24H0z" fill="none"></path>
+                                               <path d="M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0"></path>
+                                               <path d="M5.7 5.7l12.6 12.6"></path>
+                                            </svg>
+                                        </button>
+                                    @endif
                                     <button type="button" class="btn btn-icon btn-outline-danger btn-sm" wire:click="deleteCheque({{ $cheque->id }})" wire:confirm="¿Estás seguro de que deseas eliminar este cheque y sus movimientos de caja?" title="Eliminar">
                                         <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-tabler icon-tabler-trash m-0" width="20" height="20" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
                                            <path stroke="none" d="M0 0h24v24H0z" fill="none"></path>
@@ -536,7 +555,7 @@ new class extends Component {
         {{ $cheques->links() }}
     </div>
 
-    <!-- Modal for Cobrar / Transferir -->
+    <!-- Modal for Cobrar / Enviar -->
     <div class="modal fade" id="actionModal" tabindex="-1" aria-labelledby="actionModalLabel" aria-hidden="true" wire:ignore.self>
         <div class="modal-dialog">
             <form wire:submit.prevent="processAction" class="modal-content">
@@ -545,7 +564,7 @@ new class extends Component {
                         @if ($modalActionType === 'cobrar')
                             Cobrar Cheque #{{ $selectedChequeNumero }}
                         @else
-                            Transferir Cheque #{{ $selectedChequeNumero }}
+                            Enviar Cheque #{{ $selectedChequeNumero }}
                         @endif
                     </h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
@@ -574,35 +593,49 @@ new class extends Component {
                                     </span>
                                 </label>
                                 <label class="form-selectgroup-item flex-fill">
-                                    <input type="radio" name="actionType" value="transferir" class="form-selectgroup-input" wire:model.live="modalActionType">
+                                    <input type="radio" name="actionType" value="enviar" class="form-selectgroup-input" wire:model.live="modalActionType">
                                     <span class="form-selectgroup-label d-flex align-items-center p-3">
                                         <span class="me-3">
                                             <span class="form-selectgroup-check"></span>
                                         </span>
                                         <span class="form-selectgroup-label-content text-start">
-                                            <span class="font-weight-medium d-block">Transferir</span>
-                                            <span class="text-secondary text-wrap small">Endosar y entregar a una entidad/proveedor.</span>
+                                            <span class="font-weight-medium d-block">Enviar</span>
+                                            <span class="text-secondary text-wrap small">Endosar y enviar a una entidad/proveedor (Egreso de Caja).</span>
                                         </span>
                                     </span>
                                 </label>
                             </div>
                         </div>
 
-                        @if ($modalActionType === 'transferir')
+                        @if ($modalActionType === 'enviar')
                             <!-- Transfer form -->
                             <div class="mb-3">
-                                <label for="modalReceptorId" class="form-label font-weight-bold">Transferir a (Entidad/Proveedor) <span class="text-danger">*</span></label>
-                                <select wire:model="modalReceptorId" id="modalReceptorId" class="form-select" required>
-                                    <option value="">-- Selecciona el receptor --</option>
-                                    @foreach($entidades as $entidad)
-                                        <option value="{{ $entidad->id }}">{{ $entidad->nombre }} ({{ $entidad->dni_cuit ?? 'Sin CUIT' }})</option>
-                                    @endforeach
-                                </select>
+                                <label for="modalReceptorId" class="form-label font-weight-bold">Enviar a (Entidad/Proveedor) <span class="text-danger">*</span></label>
+                                <div wire:ignore class="w-100" x-data="{ value: @entangle('modalReceptorId') }">
+                                    <select x-init="
+                                        const ts = new TomSelect($el, {
+                                            placeholder: '-- Selecciona el receptor --',
+                                            onChange: function(val) {
+                                                value = val;
+                                            }
+                                        });
+                                        $watch('value', val => {
+                                            if (ts.getValue() !== val) {
+                                                ts.setValue(val);
+                                            }
+                                        });
+                                    " id="modalReceptorId" class="form-select" required>
+                                        <option value="">-- Selecciona el receptor --</option>
+                                        @foreach($entidades as $entidad)
+                                            <option value="{{ $entidad->id }}" {{ $entidad->id == $modalReceptorId ? 'selected' : '' }}>{{ $entidad->nombre }} ({{ $entidad->dni_cuit ?? 'Sin CUIT' }})</option>
+                                        @endforeach
+                                    </select>
+                                </div>
                                 @error('modalReceptorId') <span class="text-danger small">{{ $message }}</span> @enderror
                             </div>
 
                             <div class="mb-3">
-                                <label for="modalFechaSalida" class="form-label font-weight-bold">Fecha de Entrega <span class="text-danger">*</span></label>
+                                <label for="modalFechaSalida" class="form-label font-weight-bold">Fecha de Envío <span class="text-danger">*</span></label>
                                 <input type="date" wire:model="modalFechaSalida" id="modalFechaSalida" class="form-control" max="{{ now()->format('Y-m-d') }}" required>
                                 @error('modalFechaSalida') <span class="text-danger small">{{ $message }}</span> @enderror
                             </div>
@@ -623,7 +656,7 @@ new class extends Component {
                             @if ($modalActionType === 'cobrar')
                                 Confirmar Cobro
                             @else
-                                Confirmar Transferencia
+                                Confirmar Envío
                             @endif
                         </button>
                     @endif
